@@ -1,75 +1,37 @@
-#!/bin/bash
+#! /bin/bash
 
-# Script to insert data from games.csv into worldcup database
-
-# Ensure script exits if any command fails
-set -e
-
-# Check if games.csv exists
-if [[ ! -f games.csv ]]
+if [[ $1 == "test" ]]
 then
-  echo "Error: games.csv not found!"
-  exit 1
+  PSQL="psql --username=postgres --dbname=worldcuptest -t --no-align -c"
+else
+  PSQL="psql --username=freecodecamp --dbname=worldcup -t --no-align -c"
 fi
+# Do not change code above this line. Use the PSQL variable above to query your database.
 
-# Database connection variable - Adjust username/dbname if necessary
-# -t = tuples only (no headers)
-# --no-align = unaligned text format (easier for variable assignment)
-PSQL="psql --username=freecodecamp --dbname=worldcup -t --no-align -c"
+# Vaciar las tablas y reiniciar secuencias
+$PSQL "TRUNCATE teams, games RESTART IDENTITY CASCADE" >/dev/null
 
-# Clear existing data from tables and reset sequences
-echo $($PSQL "TRUNCATE teams, games RESTART IDENTITY CASCADE")
-
-# Read games.csv, skip header row (using tail -n +2)
-tail -n +2 games.csv | while IFS="," read YEAR ROUND WINNER OPPONENT WINNER_GOALS OPPONENT_GOALS
+# Procesar el archivo CSV
+while IFS=',' read -r year round winner opponent winner_goals opponent_goals
 do
-  # --- Handle Teams ---
+    # Saltar la primera línea (cabecera)
+    if [[ $year != "year" ]]; then
+        # Insertar equipos si no existen (con manejo de mayúsculas/minúsculas)
+        $PSQL "INSERT INTO teams(name) VALUES('$winner') ON CONFLICT (name) DO NOTHING" >/dev/null
+        $PSQL "INSERT INTO teams(name) VALUES('$opponent') ON CONFLICT (name) DO NOTHING" >/dev/null
 
-  # Check if winner team exists, if not insert it
-  WINNER_ID=$($PSQL "SELECT team_id FROM teams WHERE name='$WINNER'")
-  if [[ -z $WINNER_ID ]]
-  then
-    INSERT_WINNER_RESULT=$($PSQL "INSERT INTO teams(name) VALUES('$WINNER')")
-    if [[ $INSERT_WINNER_RESULT == "INSERT 0 1" ]]
-    then
-      echo Inserted team: $WINNER
-      # Get the new winner_id
-      WINNER_ID=$($PSQL "SELECT team_id FROM teams WHERE name='$WINNER'")
-    else
-      echo "Error inserting team: $WINNER"
-      exit 1 # Exit if team insertion fails
+        # Obtener IDs exactos (case-sensitive)
+        winner_id=$($PSQL "SELECT team_id FROM teams WHERE name='$winner'")
+        opponent_id=$($PSQL "SELECT team_id FROM teams WHERE name='$opponent'")
+
+        # Insertar el partido con todos los campos requeridos
+        $PSQL "INSERT INTO games(year, round, winner_id, opponent_id, winner_goals, opponent_goals) VALUES($year, '$round', $winner_id, $opponent_id, $winner_goals, $opponent_goals)" >/dev/null
     fi
-  fi
+done < games.csv
 
-  # Check if opponent team exists, if not insert it
-  OPPONENT_ID=$($PSQL "SELECT team_id FROM teams WHERE name='$OPPONENT'")
-  if [[ -z $OPPONENT_ID ]]
-  then
-    INSERT_OPPONENT_RESULT=$($PSQL "INSERT INTO teams(name) VALUES('$OPPONENT')")
-    if [[ $INSERT_OPPONENT_RESULT == "INSERT 0 1" ]]
-    then
-      echo Inserted team: $OPPONENT
-      # Get the new opponent_id
-      OPPONENT_ID=$($PSQL "SELECT team_id FROM teams WHERE name='$OPPONENT'")
-    else
-       echo "Error inserting team: $OPPONENT"
-       exit 1 # Exit if team insertion fails
-    fi
-  fi
+# Verificación de conteos (opcional, para debug)
+TEAMS_COUNT=$($PSQL "SELECT COUNT(*) FROM teams")
+GAMES_COUNT=$($PSQL "SELECT COUNT(*) FROM games")
 
-  # --- Handle Games ---
-  # Insert game data using the retrieved IDs
-  INSERT_GAME_RESULT=$($PSQL "INSERT INTO games(year, round, winner_id, opponent_id, winner_goals, opponent_goals) VALUES($YEAR, '$ROUND', $WINNER_ID, $OPPONENT_ID, $WINNER_GOALS, $OPPONENT_GOALS)")
-  if [[ $INSERT_GAME_RESULT == "INSERT 0 1" ]]
-  then
-    echo Inserted game: $YEAR $ROUND - $WINNER vs $OPPONENT ($WINNER_GOALS-$OPPONENT_GOALS)
-  else
-    echo "Error inserting game: $YEAR $ROUND $WINNER vs $OPPONENT"
-    exit 1 # Exit if game insertion fails
-  fi
-
-done < <(tail -n +2 games.csv) # Feed the loop correctly
-
-echo "Data insertion complete."
-echo "Total teams inserted: $($PSQL "SELECT COUNT(*) FROM teams")"
-echo "Total games inserted: $($PSQL "SELECT COUNT(*) FROM games")"
+echo "Total equipos insertados: $TEAMS_COUNT (deberían ser 24)"
+echo "Total partidos insertados: $GAMES_COUNT (deberían ser 32)"
